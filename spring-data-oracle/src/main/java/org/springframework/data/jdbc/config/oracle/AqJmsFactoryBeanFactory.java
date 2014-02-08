@@ -62,7 +62,7 @@ public class AqJmsFactoryBeanFactory implements FactoryBean<ConnectionFactory> {
     
     private ConnectionFactoryType connectionFactoryType = ConnectionFactoryType.CONNECTION;
 
-    private NativeJdbcExtractor nativeJdbcExtractor = new SimpleNativeJdbcExtractor();
+    private NativeJdbcExtractor nativeJdbcExtractor = null;
     
     public void setDataSource(DataSource dataSource) {
         this.dataSource = dataSource;
@@ -81,16 +81,18 @@ public class AqJmsFactoryBeanFactory implements FactoryBean<ConnectionFactory> {
     }
 
     public synchronized ConnectionFactory getObject() throws Exception {
-        DataSource dataSourceToUse;
+        DataSource dataSourceToUse = dataSource;
         if (coordinateWithDataSourceTransactions) {
             if (logger.isDebugEnabled()) {
                 logger.debug("Enabling coordination of messaging transactions with data source transactions");
             }
             dataSourceToUse = new TransactionAwareDataSource(dataSource);
         }
-        else {
-            dataSourceToUse = dataSource;
+
+        if (nativeJdbcExtractor != null) {
+            dataSourceToUse = new UnproxiedDataSource(dataSourceToUse);
         }
+
         if (aqConnectionFactory == null) {
         	if (this.connectionFactoryType == ConnectionFactoryType.CONNECTION) {
                 logger.debug("Using a 'ConnectionFactory' as the AQ Connection Factory");
@@ -115,6 +117,34 @@ public class AqJmsFactoryBeanFactory implements FactoryBean<ConnectionFactory> {
     public boolean isSingleton() {
         return true;
     }
+
+    private class UnproxiedDataSource extends DelegatingDataSource {
+
+        public UnproxiedDataSource(DataSource dataSource) {
+            super(dataSource);
+        }
+
+        @Override
+        public java.sql.Connection getConnection() throws SQLException {
+            java.sql.Connection con = DataSourceUtils.getConnection(getTargetDataSource());
+            java.sql.Connection conToUse = con;
+            if (!(con instanceof OracleConnection)) {
+                if (logger.isDebugEnabled()) {
+                    logger.debug("Unwrapping JDBC Connection of type:" + con.getClass().getName());
+                }
+                try {
+                    conToUse = nativeJdbcExtractor.getNativeConnection(con);
+                } catch (SQLException e) {
+                    throw new NonTransientDataAccessResourceException(
+                            "Error unwrapping the Oracle Connection: " + e.getMessage(), e);
+                }
+            }
+            return getCloseDelegatingConnectionProxy(conToUse, con);
+        }
+
+
+    }
+
 
     private class TransactionAwareDataSource extends DelegatingDataSource {
 
